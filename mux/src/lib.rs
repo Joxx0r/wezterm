@@ -559,6 +559,14 @@ impl Mux {
             let tab_idx = win
                 .idx_by_id(tab_id)
                 .ok_or_else(|| anyhow::anyhow!("tab {tab_id} not in {window_id}"))?;
+            if tab_idx != win.get_active_idx() {
+                metrics::counter!(
+                    "diag.focus.tab_switch",
+                    "window" => window_id.to_string(),
+                    "to_tab" => tab_id.to_string()
+                )
+                .increment(1);
+            }
             win.save_and_then_set_active(tab_idx);
         }
 

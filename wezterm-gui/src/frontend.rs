@@ -80,6 +80,20 @@ impl GuiFrontEnd {
                 MuxNotification::PaneFocused(pane_id) => {
                     promise::spawn::spawn_into_main_thread(async move {
                         let mux = Mux::get();
+                        // A newer focus change may have superseded this one while
+                        // it was queued; re-applying it would echo stale focus.
+                        let still_active = mux
+                            .resolve_pane_id(pane_id)
+                            .and_then(|(_, _, tab_id)| mux.get_tab(tab_id))
+                            .and_then(|tab| tab.get_active_pane())
+                            .map_or(false, |pane| pane.pane_id() == pane_id);
+                        if !still_active {
+                            metrics::counter!("diag.focus.frontend_stale", "pane" => pane_id.to_string())
+                                .increment(1);
+                            return;
+                        }
+                        metrics::counter!("diag.focus.frontend_reconcile", "pane" => pane_id.to_string())
+                            .increment(1);
                         if let Err(err) = mux.focus_pane_and_containing_tab(pane_id) {
                             log::error!("Error reconciling PaneFocused notification: {err:#}");
                         }
@@ -529,6 +543,7 @@ pub fn shutdown() {
 
 pub fn try_new() -> Result<Rc<GuiFrontEnd>, Error> {
     let front_end = GuiFrontEnd::try_new()?;
+    crate::gui_diagnostics::start();
     FRONT_END.with(|f| *f.borrow_mut() = Some(Rc::clone(&front_end)));
 
     let config_subscription = config::subscribe_to_config_reload({

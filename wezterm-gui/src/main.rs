@@ -40,6 +40,7 @@ mod customglyph;
 mod download;
 mod frontend;
 mod glyphcache;
+mod gui_diagnostics;
 mod inputmap;
 mod overlay;
 mod quad;

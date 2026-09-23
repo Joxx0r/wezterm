@@ -71,6 +71,8 @@ impl ConnectionOps for Connection {
         let mut msg: MSG = unsafe { std::mem::zeroed() };
         loop {
             SPAWN_QUEUE.run();
+            crate::diagnostics::MESSAGE_PUMP_ITERATIONS
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
             let res = unsafe { PeekMessageW(&mut msg, null_mut(), 0, 0, PM_REMOVE) };
             if res != 0 {

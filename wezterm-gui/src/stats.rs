@@ -354,6 +354,26 @@ impl Recorder for Stats {
     }
 }
 
+/// Returns the current value of every counter, keyed by `name{label=value,...}`.
+pub fn counter_snapshot() -> HashMap<String, usize> {
+    let inner = INNER.lock();
+    inner
+        .counters
+        .iter()
+        .map(|(key, counter)| {
+            let mut name = key.name().to_string();
+            let labels: Vec<String> = key
+                .labels()
+                .map(|label| format!("{}={}", label.key(), label.value()))
+                .collect();
+            if !labels.is_empty() {
+                name = format!("{}{{{}}}", name, labels.join(","));
+            }
+            (name, counter.value.load(Ordering::Relaxed))
+        })
+        .collect()
+}
+
 pub fn register(lua: &Lua) -> anyhow::Result<()> {
     let metrics_mod = get_or_create_sub_module(lua, "metrics")?;
     metrics_mod.set(

@@ -91,6 +91,13 @@ impl SpawnQueue {
         .push_back(f);
     }
 
+    pub(crate) fn queue_depth(&self) -> (usize, usize) {
+        (
+            self.spawned_funcs.lock().unwrap().len(),
+            self.spawned_funcs_low_pri.lock().unwrap().len(),
+        )
+    }
+
     fn has_any_queued(&self) -> bool {
         !self.spawned_funcs.lock().unwrap().is_empty()
             || !self.spawned_funcs_low_pri.lock().unwrap().is_empty()
@@ -117,9 +124,14 @@ impl SpawnQueue {
 
     fn run_impl(&self) -> bool {
         self.event_handle.reset_event();
+        let mut tasks = 0;
         while let Some(func) = self.pop_func() {
             func();
+            tasks += 1;
+            crate::diagnostics::SPAWN_TASKS_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
+        crate::diagnostics::LONGEST_DRAIN_TASKS
+            .fetch_max(tasks, std::sync::atomic::Ordering::Relaxed);
         self.has_any_queued()
     }
 }

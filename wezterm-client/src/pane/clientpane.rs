@@ -225,6 +225,20 @@ impl ClientPane {
                 // has been changed on the server, so we work to apply
                 // it here.
                 log::trace!("advised of remote pane focus: {pane_id}");
+                metrics::counter!(
+                    "diag.focus.remote_pdu",
+                    "remote_pane" => pane_id.to_string(),
+                    "local_pane" => self.local_pane_id.to_string()
+                )
+                .increment(1);
+
+                // Record the server's focus so applying it locally doesn't echo
+                // it back; echoes let two in-flight focus changes ping-pong forever.
+                self.client
+                    .focused_remote_pane_id
+                    .lock()
+                    .unwrap()
+                    .replace(self.remote_pane_id);
 
                 let mux = Mux::get();
                 if let Err(err) = mux.focus_pane_and_containing_tab(self.local_pane_id) {
@@ -579,6 +593,12 @@ impl Pane for ClientPane {
     fn advise_focus(&self) {
         let mut focused_pane = self.client.focused_remote_pane_id.lock().unwrap();
         if *focused_pane != Some(self.remote_pane_id) {
+            metrics::counter!(
+                "diag.focus.advise_sent",
+                "remote_pane" => self.remote_pane_id.to_string(),
+                "previous" => format!("{:?}", *focused_pane)
+            )
+            .increment(1);
             focused_pane.replace(self.remote_pane_id);
             let client = Arc::clone(&self.client);
             let remote_pane_id = self.remote_pane_id;

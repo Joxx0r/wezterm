@@ -1198,7 +1198,7 @@ impl TermWindow {
             TermWindowNotif::CancelOverlayForTab { tab_id, pane_id } => {
                 self.cancel_overlay_for_tab(tab_id, pane_id);
             }
-            TermWindowNotif::MuxNotification(n) => match n {
+            TermWindowNotif::MuxNotification(n) => match crate::gui_diagnostics::count_mux_notification(n) {
                 MuxNotification::Alert {
                     alert: Alert::SetUserVar { name, value },
                     pane_id,
@@ -1959,6 +1959,11 @@ impl TermWindow {
     }
 
     fn update_title_impl(&mut self) {
+        metrics::counter!(
+            "diag.termwindow.update_title",
+            "window" => self.mux_window_id.to_string()
+        )
+        .increment(1);
         let mux = Mux::get();
         let window = match mux.get_window(self.mux_window_id) {
             Some(window) => window,

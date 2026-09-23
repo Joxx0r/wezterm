@@ -25,6 +25,7 @@ pub fn spawn_command_impl(
     term_config: Arc<TermConfig>,
 ) {
     let spawn = spawn.clone();
+    log::info!(target: "gui_diagnostics", "spawn queued window={:?} destination={:?} size={:?}", src_window_id, spawn_where, size);
 
     promise::spawn::spawn(async move {
         if let Err(err) =
@@ -103,7 +104,8 @@ pub async fn spawn_command_internal(
                     .get_active_pane()
                     .ok_or_else(|| anyhow!("tab to have a pane"))?;
 
-                log::trace!("doing split_pane");
+                let diagnostic_start = std::time::Instant::now();
+                log::info!(target: "gui_diagnostics", "split begin tab={} pane={} request={:?}", tab.tab_id(), pane.pane_id(), direction);
                 let (pane, _size) = mux
                     .split_pane(
                         // tab.tab_id(),
@@ -117,6 +119,7 @@ pub async fn spawn_command_internal(
                     )
                     .await
                     .context("split_pane")?;
+                log::info!(target: "gui_diagnostics", "split complete pane={} elapsed_ms={}", pane.pane_id(), diagnostic_start.elapsed().as_millis());
                 pane.set_config(term_config);
             } else {
                 bail!("there is no active tab while splitting pane!?");

@@ -12,6 +12,7 @@ pub mod bitmaps;
 pub use wezterm_color_types as color;
 mod configuration;
 pub mod connection;
+pub mod diagnostics;
 pub mod os;
 pub mod screen;
 mod spawn;

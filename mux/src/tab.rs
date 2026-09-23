@@ -336,6 +336,7 @@ fn compute_min_size(tree: &mut Tree) -> (usize, usize) {
 }
 
 fn adjust_x_size(tree: &mut Tree, mut x_adjust: isize, cell_dimensions: &TerminalSize) {
+    let mut reported_stall = false;
     let (min_x, _) = compute_min_size(tree);
     while x_adjust != 0 {
         match tree {
@@ -384,6 +385,10 @@ fn adjust_x_size(tree: &mut Tree, mut x_adjust: isize, cell_dimensions: &Termina
                     }
                     SplitDirection::Horizontal => {
                         // x_adjust is negative
+                        if !reported_stall && data.first.cols <= 1 && data.second.cols <= 1 {
+                            log::error!(target: "gui_diagnostics", "adjust_x_size cannot progress: delta={} split={:?} minimum={}", x_adjust, data, min_x);
+                            reported_stall = true;
+                        }
                         if data.first.cols > 1 {
                             adjust_x_size(&mut *left, -1, cell_dimensions);
                             data.first.cols -= 1;
@@ -406,6 +411,7 @@ fn adjust_x_size(tree: &mut Tree, mut x_adjust: isize, cell_dimensions: &Termina
 }
 
 fn adjust_y_size(tree: &mut Tree, mut y_adjust: isize, cell_dimensions: &TerminalSize) {
+    let mut reported_stall = false;
     let (_, min_y) = compute_min_size(tree);
     while y_adjust != 0 {
         match tree {
@@ -455,6 +461,10 @@ fn adjust_y_size(tree: &mut Tree, mut y_adjust: isize, cell_dimensions: &Termina
                     }
                     SplitDirection::Vertical => {
                         // y_adjust is negative
+                        if !reported_stall && data.first.rows <= 1 && data.second.rows <= 1 {
+                            log::error!(target: "gui_diagnostics", "adjust_y_size cannot progress: delta={} split={:?} minimum={}", y_adjust, data, min_y);
+                            reported_stall = true;
+                        }
                         if data.first.rows > 1 {
                             adjust_y_size(&mut *left, -1, cell_dimensions);
                             data.first.rows -= 1;
@@ -548,7 +558,10 @@ impl Tab {
     where
         F: FnMut(PaneEntry) -> Arc<dyn Pane>,
     {
-        self.inner.lock().sync_with_pane_tree(size, root, make_pane)
+        let started = std::time::Instant::now();
+        log::debug!(target: "gui_diagnostics", "pane tree sync begin tab={} size={:?}", self.tab_id, size);
+        self.inner.lock().sync_with_pane_tree(size, root, make_pane);
+        log::debug!(target: "gui_diagnostics", "pane tree sync end tab={} elapsed_ms={}", self.tab_id, started.elapsed().as_millis());
     }
 
     pub fn codec_pane_tree(&self) -> PaneNode {
@@ -608,7 +621,10 @@ impl Tab {
     /// first.  For large resizes this tends to proportionally adjust
     /// the relative sizes of the elements in a split.
     pub fn resize(&self, size: TerminalSize) {
-        self.inner.lock().resize(size)
+        let started = std::time::Instant::now();
+        log::debug!(target: "gui_diagnostics", "resize begin tab={} requested={:?}", self.tab_id, size);
+        self.inner.lock().resize(size);
+        log::debug!(target: "gui_diagnostics", "resize end tab={} elapsed_ms={}", self.tab_id, started.elapsed().as_millis());
     }
 
     /// Called when running in the mux server after an individual pane
@@ -1777,11 +1793,25 @@ impl TabInner {
         let current = self.get_active_pane();
         match (prior, current) {
             (Some(prior), Some(current)) if prior.pane_id() != current.pane_id() => {
+                metrics::counter!(
+                    "diag.focus.local_change",
+                    "tab" => self.id.to_string(),
+                    "from" => prior.pane_id().to_string(),
+                    "to" => current.pane_id().to_string()
+                )
+                .increment(1);
                 prior.focus_changed(false);
                 current.focus_changed(true);
                 mux.notify(MuxNotification::PaneFocused(current.pane_id()));
             }
             (None, Some(current)) => {
+                metrics::counter!(
+                    "diag.focus.local_change",
+                    "tab" => self.id.to_string(),
+                    "from" => "none",
+                    "to" => current.pane_id().to_string()
+                )
+                .increment(1);
                 current.focus_changed(true);
                 mux.notify(MuxNotification::PaneFocused(current.pane_id()));
             }
