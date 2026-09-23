@@ -416,6 +416,7 @@ fn adjust_x_size(tree: &mut Tree, mut x_adjust: isize, cell_dimensions: &Termina
                             // the remaining adjustment is unsatisfiable.
                             // Give up instead of spinning in the enclosing
                             // `while x_adjust != 0` loop forever.
+                            log::warn!(target: "gui_diagnostics", "adjust_x_size gave up with {} cols unapplied: split={:?}", x_adjust, data);
                             return;
                         }
                     }
@@ -509,6 +510,7 @@ fn adjust_y_size(tree: &mut Tree, mut y_adjust: isize, cell_dimensions: &Termina
                             // the remaining adjustment is unsatisfiable.
                             // Give up instead of spinning in the enclosing
                             // `while y_adjust != 0` loop forever.
+                            log::warn!(target: "gui_diagnostics", "adjust_y_size gave up with {} rows unapplied: split={:?}", y_adjust, data);
                             return;
                         }
                     }
@@ -2609,6 +2611,168 @@ mod test {
         assert_eq!(24, panes[2].height);
         assert_eq!(400, panes[2].pixel_width);
         assert_eq!(600, panes[2].pixel_height);
+    }
+
+    fn cols(cols: usize, rows: usize) -> TerminalSize {
+        TerminalSize {
+            rows,
+            cols,
+            pixel_width: cols * 10,
+            pixel_height: rows * 25,
+            dpi: 96,
+        }
+    }
+
+    fn leaf(pane_id: PaneId, size: TerminalSize) -> PaneNode {
+        PaneNode::Leaf(PaneEntry {
+            window_id: 0,
+            tab_id: 0,
+            pane_id,
+            title: String::new(),
+            size,
+            working_dir: None,
+            is_active_pane: pane_id == 1,
+            is_zoomed_pane: false,
+            workspace: "default".to_string(),
+            cursor_pos: StableCursorPosition::default(),
+            physical_top: 0,
+            top_row: 0,
+            left_col: 0,
+            tty_name: None,
+        })
+    }
+
+    fn split(
+        direction: SplitDirection,
+        first: TerminalSize,
+        second: TerminalSize,
+        left: PaneNode,
+        right: PaneNode,
+    ) -> PaneNode {
+        PaneNode::Split {
+            left: Box::new(left),
+            right: Box::new(right),
+            node: SplitDirectionAndSize {
+                direction,
+                first,
+                second,
+            },
+        }
+    }
+
+    /// Run `f` on a helper thread and fail the test if it hasn't returned
+    /// within a few seconds. Used for the resize tests below because the
+    /// failure mode we guard against is an infinite loop, which would
+    /// otherwise hang the whole test run instead of failing it.
+    fn must_terminate<F: FnOnce() + Send + 'static>(what: &str, f: F) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            f();
+            tx.send(()).ok();
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok(),
+            "{} did not terminate",
+            what
+        );
+    }
+
+    /// The split sizes recorded in a tab's tree can disagree with the
+    /// size that the tab believes it has (the tree is synced from a mux
+    /// server and the two are maintained separately). Shrinking a tab in
+    /// that state used to spin forever in adjust_x_size once every leaf
+    /// reached 1 column but the tab still had columns left to remove.
+    #[test]
+    fn resize_terminates_when_tab_size_exceeds_split_sizes() {
+        must_terminate("shrinking an overstated horizontal split", || {
+            let tab = Tab::new(&cols(80, 24));
+            // Tree says the tab is 3 columns wide, tab says 80.
+            let root = split(
+                SplitDirection::Horizontal,
+                cols(1, 24),
+                cols(1, 24),
+                leaf(1, cols(1, 24)),
+                leaf(2, cols(1, 24)),
+            );
+            tab.sync_with_pane_tree(cols(80, 24), root, |entry| {
+                FakePane::new(entry.pane_id, entry.size)
+            });
+            tab.resize(cols(5, 24));
+            assert_eq!(2, tab.iter_panes().len());
+        });
+
+        must_terminate("shrinking an overstated vertical split", || {
+            let tab = Tab::new(&cols(80, 24));
+            // Tree says the tab is 3 rows tall, tab says 24.
+            let root = split(
+                SplitDirection::Vertical,
+                cols(80, 1),
+                cols(80, 1),
+                leaf(1, cols(80, 1)),
+                leaf(2, cols(80, 1)),
+            );
+            tab.sync_with_pane_tree(cols(80, 24), root, |entry| {
+                FakePane::new(entry.pane_id, entry.size)
+            });
+            tab.resize(cols(80, 5));
+            assert_eq!(2, tab.iter_panes().len());
+        });
+    }
+
+    /// Same class of bug one level down: a parent split records its child
+    /// subtree as wider than the child's own split sizes add up to, so the
+    /// parent keeps asking the child to give up a column it doesn't have.
+    /// This is the shape of the tree (three panes side by side) that hung
+    /// wezterm-gui at 100% CPU while attaching to a remote mux.
+    #[test]
+    fn resize_terminates_when_parent_overstates_nested_split() {
+        must_terminate("shrinking a nested horizontal split", || {
+            let tab = Tab::new(&cols(65, 24));
+            // Inner split is really 3 columns wide but the parent thinks
+            // it is 10 (parent width: 54 + 10 + 1 = 65).
+            let inner = split(
+                SplitDirection::Horizontal,
+                cols(1, 24),
+                cols(1, 24),
+                leaf(2, cols(1, 24)),
+                leaf(3, cols(1, 24)),
+            );
+            let root = split(
+                SplitDirection::Horizontal,
+                cols(54, 24),
+                cols(10, 24),
+                leaf(1, cols(54, 24)),
+                inner,
+            );
+            tab.sync_with_pane_tree(cols(65, 24), root, |entry| {
+                FakePane::new(entry.pane_id, entry.size)
+            });
+            tab.resize(cols(5, 24));
+            assert_eq!(3, tab.iter_panes().len());
+        });
+
+        must_terminate("shrinking a nested vertical split", || {
+            let tab = Tab::new(&cols(80, 65));
+            let inner = split(
+                SplitDirection::Vertical,
+                cols(80, 1),
+                cols(80, 1),
+                leaf(2, cols(80, 1)),
+                leaf(3, cols(80, 1)),
+            );
+            let root = split(
+                SplitDirection::Vertical,
+                cols(80, 54),
+                cols(80, 10),
+                leaf(1, cols(80, 54)),
+                inner,
+            );
+            tab.sync_with_pane_tree(cols(80, 65), root, |entry| {
+                FakePane::new(entry.pane_id, entry.size)
+            });
+            tab.resize(cols(80, 5));
+            assert_eq!(3, tab.iter_panes().len());
+        });
     }
 
     fn is_send_and_sync<T: Send + Sync>() -> bool {
